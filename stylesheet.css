@@ -1,0 +1,62 @@
+.gemini-overlay {
+  background-color: rgba(15, 15, 18, 0.96);
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  padding: 6px 10px;
+  spacing: 8px;
+}
+
+.gemini-btn-x {
+  color: rgba(210, 210, 215, 0.95);
+  font-size: 16px;
+  font-weight: bold;
+  background: transparent;
+  border: none;
+  padding: 0 6px;
+  min-width: 20px;
+}
+.gemini-btn-x:hover { color: white; }
+
+.gemini-btn-mic {
+  background-color: rgb(56, 135, 255);
+  border-radius: 22px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border: none;
+}
+.gemini-btn-mic.inactive {
+  background-color: rgb(70, 70, 78);
+}
+.gemini-btn-mic:hover { background-color: rgb(80, 150, 255); }
+
+.gemini-btn-stop {
+  background-color: rgb(237, 66, 71);
+  border-radius: 20px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: none;
+}
+.gemini-btn-stop.inactive {
+  background-color: rgb(75, 45, 48);
+}
+.gemini-btn-stop:hover { background-color: rgb(250, 85, 90); }
+
+.gemini-waveform {
+  min-width: 180px;
+  min-height: 36px;
+}
+
+.gemini-status-label {
+  color: rgba(230, 230, 235, 0.95);
+  font-size: 14px;
+  font-weight: bold;
+  padding: 0 10px;
+  min-width: 180px;
+  min-height: 36px;
+  text-align: center;
+}
+.gemini-status-label.done {
+  color: rgb(92, 216, 120);
+}

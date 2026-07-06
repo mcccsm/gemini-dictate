@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.gemini-dictate" path="/org/gnome/shell/extensions/gemini-dictate/">
+    <key name="api-key" type="s">
+      <default>''</default>
+      <summary>Google Gemini API key</summary>
+      <description>API key used to call the Gemini generateContent endpoint. Get one at https://aistudio.google.com/apikey.</description>
+    </key>
+    <key name="model" type="s">
+      <default>'gemini-3.1-flash-lite-preview'</default>
+      <summary>Gemini model</summary>
+      <description>Model id used for transcription requests.</description>
+    </key>
+    <key name="custom-prompt" type="s">
+      <default>''</default>
+      <summary>Custom transcription prompt</summary>
+      <description>If not empty, replaces the built-in transcription prompt sent along with the audio.</description>
+    </key>
+  </schema>
+</schemalist>
