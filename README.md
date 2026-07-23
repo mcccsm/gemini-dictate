@@ -12,7 +12,7 @@ Click the microphone icon in the top panel, speak, press stop: the transcription
 
 ## Requirements
 
-- GNOME Shell 45–48 (developed and tested on 48 / Fedora 42, Wayland)
+- GNOME Shell 45–50 (developed and tested on 50 / Fedora 44, Wayland)
 - PipeWire with `pw-record` and `pw-cat` (the `pipewire-utils` package on Fedora; `pw-cat` is optional, it only feeds the live waveform)
 - A Google Gemini API key ([aistudio.google.com/apikey](https://aistudio.google.com/apikey)) — the free tier is more than enough for dictation
 

@@ -465,7 +465,7 @@ class GeminiDictateIndicator extends PanelMenu.Button {
             return;
         }
         this._overlay = new GeminiDictateOverlay(this, this._extension);
-        Main.layoutManager.addChrome(this._overlay, { affectsInputRegion: true });
+        Main.layoutManager.addChrome(this._overlay);
 
         const [ix, iy] = this.get_transformed_position();
         const [, ih] = this.get_transformed_size();

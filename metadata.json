@@ -2,8 +2,8 @@
   "uuid": "gemini-dictate@cosimomiccol.is",
   "name": "Gemini Dictate",
   "description": "Voice dictation powered by the Google Gemini API. Click the microphone icon in the panel, speak, stop: the transcription is pasted into the focused window.",
-  "shell-version": ["45", "46", "47", "48"],
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/mcccsm/gemini-dictate",
   "settings-schema": "org.gnome.shell.extensions.gemini-dictate",
-  "version-name": "1.0.0"
+  "version-name": "1.1.0"
 }
