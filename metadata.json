@@ -5,5 +5,5 @@
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "url": "https://github.com/mcccsm/gemini-dictate",
   "settings-schema": "org.gnome.shell.extensions.gemini-dictate",
-  "version-name": "1.1.0"
+  "version-name": "1.2.0"
 }

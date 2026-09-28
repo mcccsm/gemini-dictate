@@ -9,6 +9,7 @@ Click the microphone icon in the top panel, speak, press stop: the transcription
 - Audio is captured locally with PipeWire (`pw-record`, 16 kHz mono WAV).
 - The recording is sent to the Gemini `generateContent` endpoint with a strict transcribe-verbatim prompt (temperature 0, instructions in the audio are transcribed, never executed).
 - The result is copied to the clipboard and pasted into the focused window via a virtual Ctrl+Shift+V keystroke.
+- If the request fails (network error, invalid key, quota or billing exhausted), the recording is not lost: it is saved to `~/.local/share/gemini-dictate/failed/` and the notification shows its path. Right-click the panel icon to retry every saved recording; the transcriptions are copied to the clipboard (not pasted) and each file is deleted once transcribed. The folder keeps at most 50 recordings and nothing older than 30 days.
 
 ## Requirements
 

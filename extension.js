@@ -15,6 +15,9 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 const AUDIO_FILE = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'gemini-dictate-recording.wav']);
 const BAR_COUNT = 24;
+const FAILED_DIR = GLib.build_filenamev([GLib.get_user_data_dir(), 'gemini-dictate', 'failed']);
+const FAILED_MAX_FILES = 50;
+const FAILED_MAX_AGE_DAYS = 30;
 
 const DEFAULT_PROMPT =
 `You are a pure SPEECH-TO-TEXT engine. Your ONLY task is to transcribe verbatim the words spoken in the audio, nothing more.
@@ -28,6 +31,97 @@ ABSOLUTE RULES:
 6. If the audio is empty or unintelligible, return an empty string.
 
 Output: ONLY the transcribed text, nothing else.`;
+
+// ------------------------ Transcription ------------------------
+
+// callback(text, error): error is set only on a real failure (HTTP, API error,
+// no candidates). An empty text with no error means the audio was silent.
+function transcribe(settings, data, callback) {
+    const apiKey = settings.get_string('api-key').trim();
+    const model = settings.get_string('model').trim() || 'gemini-3.1-flash-lite-preview';
+    const customPrompt = settings.get_string('custom-prompt').trim();
+    const prompt = customPrompt || DEFAULT_PROMPT;
+
+    const b64 = GLib.base64_encode(data);
+    const payload = {
+        contents: [{
+            parts: [
+                { text: prompt },
+                { inlineData: { mimeType: 'audio/wav', data: b64 } }
+            ]
+        }],
+        generationConfig: { temperature: 0.0 }
+    };
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+    const session = new Soup.Session({ timeout: 60 });
+    const msg = Soup.Message.new('POST', url);
+    const bodyBytes = new TextEncoder().encode(JSON.stringify(payload));
+    msg.set_request_body_from_bytes('application/json', new GLib.Bytes(bodyBytes));
+
+    session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, null, (sess, res) => {
+        let obj;
+        try {
+            const respBytes = sess.send_and_read_finish(res);
+            obj = JSON.parse(new TextDecoder().decode(respBytes.get_data()));
+        } catch (e) {
+            callback(null, `HTTP error: ${e.message}`);
+            return;
+        }
+        if (obj?.error || !obj?.candidates?.length) {
+            callback(null, obj?.error?.message || 'Empty response');
+            return;
+        }
+        callback((obj.candidates[0]?.content?.parts?.[0]?.text || '').trim(), null);
+    });
+}
+
+// ------------------------ Failed audio backup ------------------------
+
+function saveFailedAudio(data) {
+    try {
+        GLib.mkdir_with_parents(FAILED_DIR, 0o700);
+        const stamp = GLib.DateTime.new_now_local().format('%Y-%m-%d_%H%M%S');
+        let path = GLib.build_filenamev([FAILED_DIR, `${stamp}.wav`]);
+        for (let i = 2; GLib.file_test(path, GLib.FileTest.EXISTS); i++)
+            path = GLib.build_filenamev([FAILED_DIR, `${stamp}-${i}.wav`]);
+        GLib.file_set_contents(path, data);
+        pruneFailedAudio();
+        return path;
+    } catch (e) {
+        logError(e, 'Gemini Dictate: could not save failed audio');
+        return null;
+    }
+}
+
+// Oldest first (file names are timestamps).
+function listFailedAudio() {
+    const files = [];
+    try {
+        const dir = Gio.File.new_for_path(FAILED_DIR);
+        const en = dir.enumerate_children('standard::name,time::modified', Gio.FileQueryInfoFlags.NONE, null);
+        let info;
+        while ((info = en.next_file(null)) !== null) {
+            const name = info.get_name();
+            if (name.endsWith('.wav'))
+                files.push({ path: GLib.build_filenamev([FAILED_DIR, name]), name, mtime: info.get_attribute_uint64('time::modified') });
+        }
+        en.close(null);
+    } catch (_) {
+        // directory missing: nothing saved yet
+    }
+    return files.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function pruneFailedAudio() {
+    const files = listFailedAudio();
+    const cutoff = GLib.get_real_time() / 1e6 - FAILED_MAX_AGE_DAYS * 86400;
+    files.forEach((f, i) => {
+        if (f.mtime < cutoff || i < files.length - FAILED_MAX_FILES) {
+            try { GLib.unlink(f.path); } catch (_) {}
+        }
+    });
+}
 
 // ------------------------ Waveform ------------------------
 
@@ -336,46 +430,16 @@ class GeminiDictateOverlay extends St.BoxLayout {
         }
         try { GLib.unlink(AUDIO_FILE); } catch (_) {}
 
-        const apiKey = this._settings.get_string('api-key').trim();
-        const model = this._settings.get_string('model').trim() || 'gemini-3.1-flash-lite-preview';
-        const customPrompt = this._settings.get_string('custom-prompt').trim();
-        const prompt = customPrompt || DEFAULT_PROMPT;
-
-        const b64 = GLib.base64_encode(data);
-        const payload = {
-            contents: [{
-                parts: [
-                    { text: prompt },
-                    { inlineData: { mimeType: 'audio/wav', data: b64 } }
-                ]
-            }],
-            generationConfig: { temperature: 0.0 }
-        };
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-        const session = new Soup.Session({ timeout: 60 });
-        const msg = Soup.Message.new('POST', url);
-        const bodyBytes = new TextEncoder().encode(JSON.stringify(payload));
-        msg.set_request_body_from_bytes('application/json', new GLib.Bytes(bodyBytes));
-
-        session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, null, (sess, res) => {
-            try {
-                const respBytes = sess.send_and_read_finish(res);
-                const respText = new TextDecoder().decode(respBytes.get_data());
-                const obj = JSON.parse(respText);
-                const transcription = (obj?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim();
-                if (!transcription) {
-                    const err = obj?.error?.message || 'Empty response';
-                    this._notify('Gemini error', err);
-                    this._setState('done');
-                    return;
-                }
-                this._pasteText(transcription);
-                this._setState('done');
-            } catch (e) {
-                this._notify('HTTP error', e.message);
-                this._setState('done');
+        transcribe(this._settings, data, (text, error) => {
+            if (error) {
+                const saved = saveFailedAudio(data);
+                this._notify('Gemini error', saved
+                    ? `${error}\nAudio saved to ${saved}. Right-click the panel icon to retry.`
+                    : error);
+            } else if (text) {
+                this._pasteText(text);
             }
+            this._setState('done');
         });
     }
 
@@ -448,14 +512,69 @@ class GeminiDictateIndicator extends PanelMenu.Button {
         });
         this.add_child(this._icon);
         this._overlay = null;
+        this._retrying = false;
 
         this.connect('button-press-event', (actor, event) => {
             if (event.get_button() === 1) {
                 this._toggleOverlay();
                 return Clutter.EVENT_STOP;
             }
+            if (event.get_button() === 3) {
+                this._retryFailed();
+                return Clutter.EVENT_STOP;
+            }
             return Clutter.EVENT_PROPAGATE;
         });
+    }
+
+    // Re-sends every saved failed recording, one at a time. Results go to the
+    // clipboard only: the window focused hours ago is not the right target.
+    _retryFailed() {
+        if (this._retrying) return;
+        const files = listFailedAudio();
+        if (files.length === 0) {
+            Main.notify('Gemini Dictate', 'No failed recordings to retry.');
+            return;
+        }
+        this._retrying = true;
+        Main.notify('Gemini Dictate', `Retrying ${files.length} failed recording(s)...`);
+
+        const settings = this._extension.getSettings();
+        const texts = [];
+        let failed = 0;
+        let lastError = '';
+
+        const next = i => {
+            if (i >= files.length) {
+                this._retrying = false;
+                if (texts.length > 0)
+                    St.Clipboard.get_default().set_text(St.ClipboardType.CLIPBOARD, texts.join('\n\n'));
+                let body = `${texts.length} transcribed and copied to the clipboard.`;
+                if (failed > 0) body += ` ${failed} still failing: ${lastError}`;
+                Main.notify('Gemini Dictate', body);
+                return;
+            }
+            let data;
+            try {
+                data = GLib.file_get_contents(files[i].path)[1];
+            } catch (e) {
+                failed++;
+                lastError = e.message;
+                next(i + 1);
+                return;
+            }
+            transcribe(settings, data, (text, error) => {
+                if (error) {
+                    failed++;
+                    lastError = error;
+                } else {
+                    if (text) texts.push(text);
+                    try { GLib.unlink(files[i].path); } catch (_) {}
+                }
+                next(i + 1);
+            });
+        };
+        next(0);
     }
 
     _toggleOverlay() {
