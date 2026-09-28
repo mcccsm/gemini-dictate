@@ -37,5 +37,15 @@ export default class GeminiDictatePreferences extends ExtensionPreferences {
         const promptRow = new Adw.EntryRow({ title: 'Custom prompt' });
         settings.bind('custom-prompt', promptRow, 'text', Gio.SettingsBindFlags.DEFAULT);
         promptGroup.add(promptRow);
+
+        const costGroup = new Adw.PreferencesGroup({
+            title: 'Cost tracking',
+            description: 'Every request is logged with its token counts and estimated cost to ~/.local/share/gemini-dictate/usage.jsonl. Optional: a JSON object that overrides the built-in prices (USD per 1M tokens), e.g. {"gemini-3.1-flash-lite": {"text": 0.25, "audio": 0.5, "output": 1.5}}.',
+        });
+        page.add(costGroup);
+
+        const pricesRow = new Adw.EntryRow({ title: 'Price overrides (JSON)' });
+        settings.bind('price-overrides', pricesRow, 'text', Gio.SettingsBindFlags.DEFAULT);
+        costGroup.add(pricesRow);
     }
 }

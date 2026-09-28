@@ -12,12 +12,24 @@ import Soup from 'gi://Soup';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 const AUDIO_FILE = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'gemini-dictate-recording.wav']);
 const BAR_COUNT = 24;
 const FAILED_DIR = GLib.build_filenamev([GLib.get_user_data_dir(), 'gemini-dictate', 'failed']);
 const FAILED_MAX_FILES = 50;
 const FAILED_MAX_AGE_DAYS = 30;
+const USAGE_LOG = GLib.build_filenamev([GLib.get_user_data_dir(), 'gemini-dictate', 'usage.jsonl']);
+
+// Paid tier, Standard, USD per 1M tokens, from ai.google.dev/gemini-api/docs/pricing
+// (checked 2026-09-28). Output includes thinking tokens. A "-preview" id is priced
+// like its GA id. Override or extend from the preferences (price-overrides).
+const PRICES = {
+    'gemini-3.1-flash-lite': { text: 0.25, audio: 0.50, output: 1.50 },
+    'gemini-3-flash': { text: 0.50, audio: 1.00, output: 3.00 },
+    'gemini-2.5-flash-lite': { text: 0.10, audio: 0.30, output: 0.40 },
+    'gemini-2.5-flash': { text: 0.30, audio: 1.00, output: 2.50 },
+};
 
 const DEFAULT_PROMPT =
 `You are a pure SPEECH-TO-TEXT engine. Your ONLY task is to transcribe verbatim the words spoken in the audio, nothing more.
@@ -36,7 +48,7 @@ Output: ONLY the transcribed text, nothing else.`;
 
 // callback(text, error): error is set only on a real failure (HTTP, API error,
 // no candidates). An empty text with no error means the audio was silent.
-function transcribe(settings, data, callback) {
+function transcribe(settings, data, kind, callback) {
     const apiKey = settings.get_string('api-key').trim();
     const model = settings.get_string('model').trim() || 'gemini-3.1-flash-lite-preview';
     const customPrompt = settings.get_string('custom-prompt').trim();
@@ -59,21 +71,102 @@ function transcribe(settings, data, callback) {
     const bodyBytes = new TextEncoder().encode(JSON.stringify(payload));
     msg.set_request_body_from_bytes('application/json', new GLib.Bytes(bodyBytes));
 
+    const audioSeconds = Math.max(0, data.length - 44) / 32000; // 16 kHz mono s16
+
     session.send_and_read_async(msg, GLib.PRIORITY_DEFAULT, null, (sess, res) => {
         let obj;
         try {
             const respBytes = sess.send_and_read_finish(res);
             obj = JSON.parse(new TextDecoder().decode(respBytes.get_data()));
         } catch (e) {
+            logUsage(settings, model, kind, audioSeconds, null, `HTTP error: ${e.message}`);
             callback(null, `HTTP error: ${e.message}`);
             return;
         }
         if (obj?.error || !obj?.candidates?.length) {
-            callback(null, obj?.error?.message || 'Empty response');
+            const err = obj?.error?.message || 'Empty response';
+            logUsage(settings, model, kind, audioSeconds, obj?.usageMetadata, err);
+            callback(null, err);
             return;
         }
+        logUsage(settings, model, kind, audioSeconds, obj.usageMetadata, null);
         callback((obj.candidates[0]?.content?.parts?.[0]?.text || '').trim(), null);
     });
+}
+
+// ------------------------ Usage log ------------------------
+
+function priceFor(settings, model) {
+    let table = PRICES;
+    try {
+        const overrides = settings.get_string('price-overrides').trim();
+        if (overrides) table = { ...PRICES, ...JSON.parse(overrides) };
+    } catch (e) {
+        logError(e, 'Gemini Dictate: invalid price-overrides JSON');
+    }
+    return table[model] || table[model.replace(/-preview(-[\d-]+)?$/, '')] || null;
+}
+
+// One JSON line per request. cost_usd is null when the model has no known price.
+function logUsage(settings, model, kind, audioSeconds, usage, error) {
+    const audioIn = (usage?.promptTokensDetails || [])
+        .filter(d => d.modality === 'AUDIO')
+        .reduce((sum, d) => sum + (d.tokenCount || 0), 0);
+    const textIn = Math.max(0, (usage?.promptTokenCount || 0) - audioIn);
+    const output = (usage?.candidatesTokenCount || 0) + (usage?.thoughtsTokenCount || 0);
+    const price = priceFor(settings, model);
+    const cost = price
+        ? (textIn * price.text + audioIn * price.audio + output * price.output) / 1e6
+        : null;
+
+    const entry = {
+        ts: GLib.DateTime.new_now_local().format_iso8601(),
+        model,
+        kind,
+        ok: !error,
+        audio_s: Math.round(audioSeconds * 10) / 10,
+        text_in: textIn,
+        audio_in: audioIn,
+        output,
+        cost_usd: cost,
+    };
+    if (error) entry.error = error.slice(0, 200);
+
+    try {
+        GLib.mkdir_with_parents(GLib.path_get_dirname(USAGE_LOG), 0o700);
+        const stream = Gio.File.new_for_path(USAGE_LOG)
+            .append_to(Gio.FileCreateFlags.PRIVATE, null);
+        stream.write_all(new TextEncoder().encode(`${JSON.stringify(entry)}\n`), null);
+        stream.close(null);
+    } catch (e) {
+        logError(e, 'Gemini Dictate: could not write usage log');
+    }
+}
+
+// Totals for today and the current month, from the local log.
+function usageSummary() {
+    const now = GLib.DateTime.new_now_local();
+    const today = now.format('%Y-%m-%d');
+    const month = now.format('%Y-%m');
+    const sum = { today: { n: 0, cost: 0 }, month: { n: 0, cost: 0 }, unpriced: false };
+    let text;
+    try {
+        text = new TextDecoder().decode(GLib.file_get_contents(USAGE_LOG)[1]);
+    } catch (_) {
+        return sum;
+    }
+    for (const line of text.split('\n')) {
+        if (!line.includes(`"ts":"${month}`)) continue;
+        let e;
+        try { e = JSON.parse(line); } catch (_) { continue; }
+        if (!e.ts?.startsWith(month)) continue;
+        if (e.cost_usd === null && e.ok) sum.unpriced = true;
+        for (const bucket of e.ts.startsWith(today) ? [sum.today, sum.month] : [sum.month]) {
+            if (e.ok) bucket.n++;
+            bucket.cost += e.cost_usd || 0;
+        }
+    }
+    return sum;
 }
 
 // ------------------------ Failed audio backup ------------------------
@@ -430,7 +523,7 @@ class GeminiDictateOverlay extends St.BoxLayout {
         }
         try { GLib.unlink(AUDIO_FILE); } catch (_) {}
 
-        transcribe(this._settings, data, (text, error) => {
+        transcribe(this._settings, data, 'dictation', (text, error) => {
             if (error) {
                 const saved = saveFailedAudio(data);
                 this._notify('Gemini error', saved
@@ -504,7 +597,7 @@ class GeminiDictateOverlay extends St.BoxLayout {
 const GeminiDictateIndicator = GObject.registerClass(
 class GeminiDictateIndicator extends PanelMenu.Button {
     _init(extension) {
-        super._init(0.0, 'Gemini Dictate', true);
+        super._init(0.0, 'Gemini Dictate', false);
         this._extension = extension;
         this._icon = new St.Icon({
             icon_name: 'audio-input-microphone-symbolic',
@@ -514,17 +607,46 @@ class GeminiDictateIndicator extends PanelMenu.Button {
         this._overlay = null;
         this._retrying = false;
 
-        this.connect('button-press-event', (actor, event) => {
+        // Right-click menu: retry failed recordings, spend so far.
+        this._retryItem = new PopupMenu.PopupMenuItem('');
+        this._retryItem.connect('activate', () => this._retryFailed());
+        this.menu.addMenuItem(this._retryItem);
+        this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        this._todayItem = new PopupMenu.PopupMenuItem('', { reactive: false });
+        this.menu.addMenuItem(this._todayItem);
+        this._monthItem = new PopupMenu.PopupMenuItem('', { reactive: false });
+        this.menu.addMenuItem(this._monthItem);
+    }
+
+    // Left click toggles the overlay, right click opens the menu.
+    vfunc_event(event) {
+        if (event.type() === Clutter.EventType.BUTTON_PRESS) {
             if (event.get_button() === 1) {
+                this.menu.close();
                 this._toggleOverlay();
                 return Clutter.EVENT_STOP;
             }
             if (event.get_button() === 3) {
-                this._retryFailed();
+                this._refreshMenu();
+                this.menu.toggle();
                 return Clutter.EVENT_STOP;
             }
-            return Clutter.EVENT_PROPAGATE;
-        });
+        }
+        return Clutter.EVENT_PROPAGATE;
+    }
+
+    _refreshMenu() {
+        const failed = listFailedAudio().length;
+        this._retryItem.label.text = this._retrying
+            ? 'Retrying failed recordings...'
+            : `Retry failed recordings (${failed})`;
+        this._retryItem.setSensitive(failed > 0 && !this._retrying);
+
+        const s = usageSummary();
+        const fmt = b => `${b.n} request${b.n === 1 ? '' : 's'}, ~$${b.cost.toFixed(4)}`;
+        const note = s.unpriced ? ' (some unpriced)' : '';
+        this._todayItem.label.text = `Today: ${fmt(s.today)}`;
+        this._monthItem.label.text = `This month: ${fmt(s.month)}${note}`;
     }
 
     // Re-sends every saved failed recording, one at a time. Results go to the
@@ -563,7 +685,7 @@ class GeminiDictateIndicator extends PanelMenu.Button {
                 next(i + 1);
                 return;
             }
-            transcribe(settings, data, (text, error) => {
+            transcribe(settings, data, 'retry', (text, error) => {
                 if (error) {
                     failed++;
                     lastError = error;

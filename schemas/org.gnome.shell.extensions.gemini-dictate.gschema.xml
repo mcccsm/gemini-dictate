@@ -16,5 +16,10 @@
       <summary>Custom transcription prompt</summary>
       <description>If not empty, replaces the built-in transcription prompt sent along with the audio.</description>
     </key>
+    <key name="price-overrides" type="s">
+      <default>''</default>
+      <summary>Price overrides (JSON)</summary>
+      <description>Optional JSON object keyed by model id, USD per 1M tokens, merged over the built-in table. Example: {"gemini-3.1-flash-lite": {"text": 0.25, "audio": 0.5, "output": 1.5}}</description>
+    </key>
   </schema>
 </schemalist>
